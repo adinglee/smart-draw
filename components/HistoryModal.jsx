@@ -6,7 +6,7 @@ import { CHART_TYPES } from '../lib/constants.js';
 import ConfirmDialog from './ConfirmDialog';
 import { X as XIcon, Trash2, RotateCcw, HardDrive, Clock as ClockIcon } from 'lucide-react';
 
-export default function HistoryModal({ isOpen, onClose, onApply }) {
+export default function HistoryModal({ isOpen, onClose, onApply, editorType }) {
   const [histories, setHistories] = useState([]);
   const [confirmDialog, setConfirmDialog] = useState({
     isOpen: false,
@@ -24,7 +24,14 @@ export default function HistoryModal({ isOpen, onClose, onApply }) {
   const loadHistories = async () => {
     try {
       const allHistories = await historyManager.getHistories();
-      setHistories(allHistories);
+      const filtered = Array.isArray(allHistories)
+        ? allHistories.filter((h) => {
+            if (!editorType) return true;
+            const edt = (h.editor || 'drawio');
+            return edt === editorType;
+          })
+        : [];
+      setHistories(filtered);
     } catch (e) {
       console.error('Failed to load histories', e);
       setHistories([]);

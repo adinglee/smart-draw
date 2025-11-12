@@ -53,6 +53,22 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+/* Landing page text line height */
+.paper p,
+.paper h1,
+.paper h2,
+.paper h3,
+.paper h4,
+.paper h5,
+.paper h6,
+.paper .card-text,
+.paper .hero-subtitle,
+.paper .step-content p,
+.paper .step-content h4,
+.paper .footer-text {
+  line-height: 1.5;
+}
+
 /* Hide scrollbar utility class */
 .scrollbar-hide::-webkit-scrollbar {
   display: none;

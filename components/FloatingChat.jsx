@@ -66,6 +66,7 @@ export default function FloatingChat({
   onOpenSettings,
 }) {
   const [isOpen, setIsOpen] = useState(true);
+  const panelRef = useRef(null);
   const [input, setInput] = useState('');
   const [images, setImages] = useState([]); // {file, url, name, type}
   const [files, setFiles] = useState([]); // {file, name, type, size}
@@ -73,6 +74,9 @@ export default function FloatingChat({
   const [showTypeMenu, setShowTypeMenu] = useState(false);
   const typeMenuRef = useRef(null);
   const typeMenuButtonRef = useRef(null);
+  const bottomRef = useRef(null);
+  const [shouldStickToBottom, setShouldStickToBottom] = useState(true);
+  const [copiedIndex, setCopiedIndex] = useState(-1);
   const chartTypeOptions = [
     { value: 'auto', label: '自动' },
     { value: 'flowchart', label: '流程图' },
@@ -159,6 +163,20 @@ export default function FloatingChat({
     adjustTextareaHeight();
   }, [input, isOpen]);
 
+  // Auto scroll chat to bottom on updates
+  useEffect(() => {
+    try {
+      if (!bottomRef.current) return;
+      const viewport = bottomRef.current.parentElement?.parentElement;
+      if (!viewport) return;
+      const atBottom = Math.abs((viewport.scrollHeight - viewport.scrollTop) - viewport.clientHeight) <= 2;
+      if (shouldStickToBottom || atBottom) {
+        bottomRef.current.scrollIntoView({ behavior: 'auto', block: 'end' });
+      }
+    } catch {}
+  }, [messages, isGenerating, isOpen, shouldStickToBottom]);
+
+
   // Reset input and selected attachments when conversation changes (new chat)
   useEffect(() => {
     if (!conversationId) return;
@@ -195,6 +213,35 @@ export default function FloatingChat({
     };
   }, [showTypeMenu]);
 
+  // Notify page about chat panel visibility and width to allow padding adjustment
+  useEffect(() => {
+    const notify = () => {
+      try {
+        const rect = isOpen && panelRef.current ? panelRef.current.getBoundingClientRect() : null;
+        const reserve = rect ? Math.round(Math.max(0, window.innerWidth - rect.left)) : 0; // includes right-2 gap
+        window.dispatchEvent(
+          new CustomEvent('chatpanel-visibility-change', {
+            detail: { open: !!isOpen, width: reserve }
+          })
+        );
+      } catch {}
+    };
+
+    if (isOpen) {
+      // Wait for layout to settle before measuring
+      const id = requestAnimationFrame(notify);
+      const onResize = () => notify();
+      window.addEventListener('resize', onResize);
+      return () => {
+        cancelAnimationFrame(id);
+        window.removeEventListener('resize', onResize);
+      };
+    } else {
+      // When closed, send width 0
+      notify();
+    }
+  }, [isOpen]);
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -218,19 +265,34 @@ export default function FloatingChat({
     }
   };
 
-  // Detect XML content or fenced XML blocks
-  const isXmlContent = (text = '') => {
+  // Detect code content (Draw.io XML or Excalidraw JSON)
+  const isCodeContent = (text = '') => {
     if (typeof text !== 'string') return false;
     const trimmed = text.trim();
-    if (/```xml[\s\S]*```/i.test(trimmed)) return true;
-    return /^(<\?xml|<mxfile|<diagram|<mxGraphModel|<graph)/i.test(trimmed);
+    if (/```(xml|json)[\s\S]*```/i.test(trimmed)) return true;
+    // Draw.io XML heuristics
+    if (/^(<\?xml|<mxfile|<diagram|<mxGraphModel|<graph)/i.test(trimmed)) return true;
+    // Excalidraw JSON heuristics
+    if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && /"type"\s*:\s*"excalidraw"/i.test(trimmed)) return true;
+    return false;
   };
 
-  const extractXml = (text = '') => {
+  const extractCode = (text = '') => {
     if (typeof text !== 'string') return text;
-    const match = text.match(/```xml\s*([\s\S]*?)```/i);
-    if (match) return match[1].trim();
+    // Prefer fenced blocks
+    const fenced = text.match(/```\s*(xml|json)?\s*([\s\S]*?)```/i);
+    if (fenced && fenced[2]) return fenced[2].trim();
     return text.trim();
+  };
+
+  const copyUserMessage = async (text = '', idx) => {
+    try {
+      await navigator.clipboard.writeText(typeof text === 'string' ? text : String(text || ''));
+      setCopiedIndex(idx);
+      setTimeout(() => setCopiedIndex(-1), 1200);
+    } catch (e) {
+      console.error('Copy failed', e);
+    }
   };
 
   if (!isOpen) {
@@ -246,7 +308,7 @@ export default function FloatingChat({
 
   return (
     <>
-    <Card className="fixed top-2 bottom-2 right-2 w-[420px] h-auto shadow-xl flex flex-col z-50 bg-white/90 supports-[backdrop-filter]:bg-white/80 backdrop-blur border border-gray-200/70 rounded-2xl">
+    <Card ref={panelRef} className="fixed top-2 bottom-2 right-2 w-[420px] h-auto shadow-xl flex flex-col z-50 bg-white/90 supports-[backdrop-filter]:bg-white/80 backdrop-blur border border-gray-200/70 rounded-2xl">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-transparent rounded-t-3xl">
         <div className="flex items-center gap-2">
@@ -318,43 +380,59 @@ export default function FloatingChat({
                     isUser ? 'justify-end' : 'justify-start'
                   )}
                 >
-                  {(!isUser && (msg.type === 'xml' || isXmlContent(msg.content))) ? (
-                    <XmlBubble xmlText={extractXml(msg.content)} onApplyXml={onApplyXml} />
+                  {(!isUser && (msg.type === 'xml' || msg.type === 'json' || isCodeContent(msg.content))) ? (
+                    <CodeBubble codeText={extractCode(msg.content)} onApplyXml={onApplyXml} />
                   ) : (
-                    <div
-                      className={cn(
-                        'max-w-[80%] px-4 py-2 text-[13px] leading-6 rounded-md shadow-none whitespace-pre-wrap break-words break-all border border-gray-200 bg-gray-100 text-gray-900'
-                      )}
-                    >
-                      {msg.content && (
-                        <div>{msg.content}</div>
-                      )}
-                      {isUser && Array.isArray(msg.files) && msg.files.length > 0 && (
-                        <div className={cn('mt-2 flex flex-wrap gap-2')}>
-                          {msg.files.map((f, i) => (
-                            <span key={i} className={cn(
-                              'inline-flex items-center gap-1 pl-1 pr-1 py-0.5 rounded-md border text-[11px] bg-gray-200 border-gray-300 text-gray-800'
-                            )}>
-                              <FileText className="w-3 h-3 opacity-80" />
-                              <span className="truncate max-w-[160px]" title={f.name}>{f.name || 'file'}</span>
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      {isUser && Array.isArray(msg.images) && msg.images.length > 0 && (
-                        <div className={cn('mt-2 flex flex-wrap gap-2')}>
-                          {msg.images.map((im, i) => (
-                            <img
-                              key={i}
-                              src={im.url}
-                              alt={im.name || 'image'}
-                              className={cn(
-                                'w-16 h-16 rounded-md object-cover ring-1 ring-gray-300'
-                              )}
-                            />
-                          ))}
-                        </div>
-                      )}
+                    <div className="relative inline-flex justify-end items-end">
+                      <button
+                          onClick={() => copyUserMessage(msg.content, idx)}
+                          className={cn(
+                            ' h-7 w-7  hover:bg-gray-50 text-gray-600 flex items-center justify-center'
+                          )}
+                          title="复制"
+                          aria-label="复制"
+                        >
+                          {copiedIndex === idx ? (
+                            <Check className="w-3.5 h-3.5 text-emerald-600" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      <div
+                        className={cn(
+                          'max-w-[90%] px-4 py-2 text-[13px] leading-6 rounded-md shadow-none whitespace-pre-wrap break-words break-all border border-gray-200 bg-gray-100 text-gray-900'
+                        )}
+                      >
+                        {msg.content && (
+                          <div>{msg.content}</div>
+                        )}
+                        {isUser && Array.isArray(msg.files) && msg.files.length > 0 && (
+                          <div className={cn('mt-2 flex flex-wrap gap-2')}>
+                            {msg.files.map((f, i) => (
+                              <span key={i} className={cn(
+                                'inline-flex items-center gap-1 pl-1 pr-1 py-0.5 rounded-md border text-[11px] bg-gray-200 border-gray-300 text-gray-800'
+                              )}>
+                                <FileText className="w-3 h-3 opacity-80" />
+                                <span className="truncate max-w-[160px]" title={f.name}>{f.name || 'file'}</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {isUser && Array.isArray(msg.images) && msg.images.length > 0 && (
+                          <div className={cn('mt-2 flex flex-wrap gap-2')}>
+                            {msg.images.map((im, i) => (
+                              <img
+                                key={i}
+                                src={im.url}
+                                alt={im.name || 'image'}
+                                className={cn(
+                                  'w-16 h-16 rounded-md object-cover ring-1 ring-gray-300'
+                                )}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -365,7 +443,7 @@ export default function FloatingChat({
             <div className="flex justify-start">
               <div className="rounded-xl px-4 py-2 text-sm bg-gray-100 border border-gray-200 shadow-none">
                 <div className="flex space-x-2 items-center gap-2">
-                正在绘制图表
+                正在绘制图表，请勿关闭页面
                   <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
                   <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
                   <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
@@ -373,6 +451,8 @@ export default function FloatingChat({
               </div>
             </div>
           )}
+          {/* Auto-scroll sentinel */}
+          <div id="chat-bottom-sentinel" ref={bottomRef} />
         </div>
       </ScrollArea>
 
@@ -549,13 +629,13 @@ export default function FloatingChat({
   );
 }
 
-function XmlBubble({ xmlText, onApplyXml }) {
+function CodeBubble({ codeText, onApplyXml }) {
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
   const copyToClipboard = async () => {
     try {
-      await navigator.clipboard.writeText(xmlText);
+      await navigator.clipboard.writeText(codeText);
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
     } catch (e) {
@@ -572,17 +652,17 @@ function XmlBubble({ xmlText, onApplyXml }) {
       >
         <div className="flex items-center gap-2 text-[12px] font-medium text-gray-700">
           <Code2 className="w-3.5 h-3.5 opacity-80" />
-          {/* <span>XML</span> */}
+          {/* <span>CODE</span> */}
         </div>
         <div className="flex items-center gap-1.5">
           <button
             onClick={(e) => {
               e.stopPropagation();
               if (typeof onApplyXml === 'function') {
-                onApplyXml(xmlText);
+                onApplyXml(codeText);
               } else {
                 try {
-                  window.dispatchEvent(new CustomEvent('apply-xml', { detail: { xml: xmlText } }));
+                  window.dispatchEvent(new CustomEvent('apply-xml', { detail: { xml: codeText } }));
                 } catch {}
               }
             }}
@@ -612,9 +692,9 @@ function XmlBubble({ xmlText, onApplyXml }) {
           </button>
           <pre
             className={cn(
-              'font-mono text-[12px] leading-6 px-3 py-3 pt-10 whitespace-pre-wrap break-words break-all text-gray-800 max-h-[70vh] overflow-auto w-full max-w-full min-w-0'
+              'font-mono text-[12px] leading-6 px-3 py-3 pt-10 whitespace-pre-wrap break-words break-all text-gray-800 max-h-[60vh] overflow-auto w-full max-w-full min-w-0'
             )}
-          >{xmlText}</pre>
+          >{codeText}</pre>
         </div>
       )}
     </div>
